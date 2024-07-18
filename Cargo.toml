@@ -1,0 +1,16 @@
+[package]
+name = "agenci"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.86"
+axum = "0.7.4"
+chrono = { version = "0.4.38", features = ["serde"] }
+serde = { version = "1.0.204", features = ["derive"] }
+serde_json = "1.0.120"
+shuttle-axum = "0.46.0"
+shuttle-runtime = "0.46.0"
+shuttle-shared-db = { version = "0.46.0", features = ["sqlx", "postgres"] }
+sqlx = "0.7.4"
+tokio = "1.28.2"
