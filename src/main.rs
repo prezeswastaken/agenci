@@ -1,7 +1,16 @@
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::{get, post}, Json, Router};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
 use models::Room;
 use serde_json::Value;
-use socketioxide::{extract::{Bin, Data, SocketRef}, SocketIo};
+use socketioxide::{
+    extract::{Bin, Data, SocketRef},
+    SocketIo,
+};
 use sqlx::PgPool;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
@@ -55,12 +64,8 @@ struct MyState {
 }
 
 #[shuttle_runtime::main]
-async fn main(
-    #[shuttle_shared_db::Postgres]
-    pool: PgPool,
-) -> shuttle_axum::ShuttleAxum {
-
-     sqlx::migrate!()
+async fn main(#[shuttle_shared_db::Postgres] pool: PgPool) -> shuttle_axum::ShuttleAxum {
+    sqlx::migrate!()
         .run(&pool)
         .await
         .expect("Failed to run migrations");
@@ -76,7 +81,7 @@ async fn main(
         .layer(
             ServiceBuilder::new()
                 .layer(CorsLayer::permissive())
-                .layer(layer)
+                .layer(layer),
         )
         .with_state(state);
 
