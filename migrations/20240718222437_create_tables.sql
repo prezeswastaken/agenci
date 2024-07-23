@@ -18,13 +18,12 @@ CREATE TABLE players (
 );
 
 -- Create the field table
-CREATE TABLE field (
+CREATE TABLE fields (
     id SERIAL PRIMARY KEY,
     room_id INTEGER NOT NULL,
     team VARCHAR(50),
     text VARCHAR(255),
     is_used BOOLEAN DEFAULT FALSE,
-    is_black BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_room
     FOREIGN KEY (room_id)

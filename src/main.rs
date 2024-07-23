@@ -1,3 +1,4 @@
+use agenci::{models::Room, words::WORDS};
 use axum::{
     extract::State,
     http::StatusCode,
@@ -5,8 +6,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use models::Room;
-use serde_json::Value;
+use serde_json::{json, Value};
 use socketioxide::{
     extract::{Bin, Data, SocketRef},
     SocketIo,
@@ -15,28 +15,52 @@ use sqlx::PgPool;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::info;
-use tracing_subscriber::FmtSubscriber;
-
-pub mod models;
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 
 async fn hello_world() -> &'static str {
     "Hello, chuju!"
 }
 
 async fn add_room_handler(state: State<MyState>) -> Result<impl IntoResponse, impl IntoResponse> {
-    let query = "INSERT INTO rooms DEFAULT VALUES RETURNING id, created_at";
-    match sqlx::query_as::<_, Room>(query)
+    match sqlx::query_as!(Room,  "INSERT INTO rooms DEFAULT VALUES RETURNING id, created_at")
         .fetch_one(&state.pool)
         .await
     {
-        Ok(room) => Ok((StatusCode::CREATED, Json(room))),
+        Ok(room) => {
+            let words = WORDS.clone().map(|s| s.to_string());
+            assert!(words.len() >= 25);
+
+            let mut rng = thread_rng();
+            let words = words.choose_multiple(&mut rng, 25).collect::<Vec<_>>();
+            for words in words.iter() {
+                sqlx::query_as!(
+                    Field,
+                    "INSERT INTO fields (room_id, text) VALUES ($1, $2)",
+                    room.id,
+                    words
+                )
+                .execute(&state.pool)
+                .await
+                .ok();
+            };
+
+            Ok((StatusCode::CREATED, Json(room)))
+        }
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
 
 async fn get_rooms_handler(state: State<MyState>) -> Result<impl IntoResponse, impl IntoResponse> {
-    let query = "SELECT * FROM rooms";
-    match sqlx::query_as::<_, Room>(query)
+    // let query = "SELECT * FROM rooms";
+    // match sqlx::query_as::<_, Room>(query)
+    //     .fetch_all(&state.pool)
+    //     .await
+    // {
+    //     Ok(rooms) => Ok(Json(rooms)),
+    //     Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    // }
+    match sqlx::query_as!(Room, "SELECT * FROM rooms")
         .fetch_all(&state.pool)
         .await
     {
@@ -56,6 +80,14 @@ fn on_connect(socket: SocketRef, Data(data): Data<Value>) {
             socket.emit("message-back", data).ok();
         },
     );
+
+    socket.on("join-room", |socket: SocketRef, Data::<Value>(data)| {
+        info!("Joining room: {:?}", data);
+        socket.join("1").ok();
+        let rooms = socket.rooms().unwrap();
+        let room = rooms.get(0).unwrap();
+        socket.to(room.to_string()).broadcast().emit("hello", json!({ "hello": "world" })).ok();
+    });
 }
 
 #[derive(Clone)]
