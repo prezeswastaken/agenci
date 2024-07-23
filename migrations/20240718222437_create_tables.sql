@@ -21,9 +21,9 @@ CREATE TABLE players (
 CREATE TABLE fields (
     id SERIAL PRIMARY KEY,
     room_id INTEGER NOT NULL,
-    team VARCHAR(50),
-    text VARCHAR(255),
-    is_used BOOLEAN DEFAULT FALSE,
+    team VARCHAR(50) NOT NULL,
+    text VARCHAR(255) NOT NULL,
+    is_used BOOLEAN DEFAULT FALSE NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_room
     FOREIGN KEY (room_id)
