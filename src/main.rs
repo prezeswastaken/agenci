@@ -1,15 +1,26 @@
+use std::sync::Arc;
+
 use agenci::{
-    models::{Field, Room, Team},
+    models::{Field, Player, Room, Team},
+    my_state::MyState,
+    repositories::{
+        field_repository::{get_all_fields, get_field_by_id, get_fields_for_room_id, mark_field_as_used},
+        player_repository::{
+            create_player_for_the_room_id, get_player_by_id, get_players_by_room_id,
+            is_player_id_in_room,
+        }, room_repository::get_room_by_id,
+    },
+    types::{JoinRoomRequest, Role},
     words::WORDS,
 };
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
-use rand::thread_rng;
+use axum_macros::debug_handler;
 use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
 use serde_json::{json, Value};
 use socketioxide::{
@@ -17,6 +28,7 @@ use socketioxide::{
     SocketIo,
 };
 use sqlx::PgPool;
+use tokio::sync::RwLock;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::info;
@@ -25,14 +37,98 @@ async fn hello_world() -> &'static str {
     "Hello, chuju!"
 }
 
+async fn check_field_handler(state: State<Arc<RwLock<MyState>>>, Path((field_id, player_id)): Path<(i32, i32)>) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let player = get_player_by_id(state.clone().0, player_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?.map_or_else(|| Err((StatusCode::NOT_FOUND, "Player not found".to_string())), |p| Ok(p))?;
+    let field = get_field_by_id(state.clone().0, field_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?.map_or_else(|| Err((StatusCode::NOT_FOUND, "Field not found".to_string())), |f| Ok(f))?;
+    if player.role != Role::Guesser {
+        return Err((StatusCode::FORBIDDEN, "Only guessers can check fields".to_string()));
+    }
+    mark_field_as_used(state.0, field_id).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(StatusCode::OK)
+}
+
+async fn get_room_by_room_id_handler(
+    state: State<Arc<RwLock<MyState>>>,
+    Path(room_id): Path<i32>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let room = get_room_by_id(state.0, room_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok((StatusCode::OK, Json(room)))
+}
+
+async fn get_all_fields_handler(
+    state: State<Arc<RwLock<MyState>>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let fields = get_all_fields(state.0)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok((StatusCode::OK, Json(fields)))
+}
+
+async fn get_fields_for_room_id_handler(
+    state: State<Arc<RwLock<MyState>>>,
+    Path(room_id): Path<i32>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let fields = get_fields_for_room_id(state.0, room_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok((StatusCode::OK, Json(fields)))
+}
+
+async fn is_player_in_room_handler(
+    state: State<Arc<RwLock<MyState>>>,
+    Path((room_id, player_id)): Path<(i32, i32)>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let is_player_in_room = is_player_id_in_room(state.0, player_id, room_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok((StatusCode::OK, Json(is_player_in_room)))
+}
+
+async fn create_player_for_the_room_id_handler(
+    state: State<Arc<RwLock<MyState>>>,
+    Path((username, room_id)): Path<(String, i32)>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let player = create_player_for_the_room_id(state.0, username, room_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok((StatusCode::CREATED, Json(player)))
+}
+
+async fn get_player_by_id_handler(
+    state: State<Arc<RwLock<MyState>>>,
+    Path(player_id): Path<i32>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let player = get_player_by_id(state.0, player_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok((StatusCode::OK, Json(player)))
+}
+
+#[debug_handler]
+async fn get_players_for_room_handler(
+    state: State<Arc<RwLock<MyState>>>,
+    Path(room_id): Path<i32>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let players = get_players_by_room_id(state.0, room_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok((StatusCode::OK, Json(players)))
+}
+
 #[axum_macros::debug_handler]
-async fn add_room_handler(state: State<MyState>) -> Result<impl IntoResponse, impl IntoResponse> {
-    match sqlx::query_as!(
-        Room,
-        "INSERT INTO rooms DEFAULT VALUES RETURNING id, created_at"
-    )
-    .fetch_one(&state.pool)
-    .await
+async fn add_room_handler(
+    state: State<Arc<RwLock<MyState>>>,
+) -> Result<impl IntoResponse, impl IntoResponse> {
+    let pool = &state.read().await.pool;
+    match sqlx::query_as!(Room, "INSERT INTO rooms DEFAULT VALUES RETURNING *")
+        .fetch_one(pool)
+        .await
     {
         Ok(room) => {
             let words = WORDS.clone().map(|s| s.to_string());
@@ -75,7 +171,7 @@ async fn add_room_handler(state: State<MyState>) -> Result<impl IntoResponse, im
                 params.push((room.id, word.to_owned().clone(), team.to_string()));
             }
 
-            query.push_str(" ON CONFLICT DO NOTHING"); // Optional: handle duplicates
+            query.push_str(" ON CONFLICT DO NOTHING");
 
             let mut query_builder = sqlx::query(&query);
 
@@ -84,7 +180,7 @@ async fn add_room_handler(state: State<MyState>) -> Result<impl IntoResponse, im
             }
 
             query_builder
-                .execute(&state.pool)
+                .execute(pool)
                 .await
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -94,7 +190,9 @@ async fn add_room_handler(state: State<MyState>) -> Result<impl IntoResponse, im
     }
 }
 
-async fn get_rooms_handler(state: State<MyState>) -> Result<impl IntoResponse, impl IntoResponse> {
+async fn get_rooms_handler(
+    state: State<Arc<RwLock<MyState>>>,
+) -> Result<impl IntoResponse, impl IntoResponse> {
     // let query = "SELECT * FROM rooms";
     // match sqlx::query_as::<_, Room>(query)
     //     .fetch_all(&state.pool)
@@ -103,8 +201,9 @@ async fn get_rooms_handler(state: State<MyState>) -> Result<impl IntoResponse, i
     //     Ok(rooms) => Ok(Json(rooms)),
     //     Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     // }
+    let pool = &state.read().await.pool;
     match sqlx::query_as!(Room, "SELECT * FROM rooms")
-        .fetch_all(&state.pool)
+        .fetch_all(pool)
         .await
     {
         Ok(rooms) => Ok(Json(rooms)),
@@ -112,7 +211,7 @@ async fn get_rooms_handler(state: State<MyState>) -> Result<impl IntoResponse, i
     }
 }
 
-fn on_connect(socket: SocketRef, Data(data): Data<Value>) {
+fn on_connect(socket: SocketRef, Data(data): Data<Value>, state: Arc<RwLock<MyState>>) {
     info!("Socket.IO connected: {:?} {:?}", socket.ns(), socket.id);
     socket.emit("auth", data).ok();
 
@@ -124,22 +223,43 @@ fn on_connect(socket: SocketRef, Data(data): Data<Value>) {
         },
     );
 
-    socket.on("join-room", |socket: SocketRef, Data::<Value>(data)| {
-        info!("Joining room: {:?}", data);
-        socket.join("1").ok();
+    socket.on(
+        "join-room",
+        |socket: SocketRef, Data::<JoinRoomRequest>(join_room_request)| {
+            let JoinRoomRequest {
+                player_id,
+                room_id,
+                username,
+            } = join_room_request;
+
+            info!("Player with id {} is joining room: {}", player_id, room_id);
+
+            socket.join(room_id.to_string()).ok();
+            let rooms = socket.rooms().unwrap();
+            let room = rooms.get(0).unwrap();
+            socket
+                .to(room.to_string())
+                .broadcast()
+                .emit(
+                    "player-joined",
+                    format!("{username} dołączył(a) do pokoju!"),
+                )
+                .ok();
+        },
+    );
+    socket.on("field-updated", |socket: SocketRef| {
         let rooms = socket.rooms().unwrap();
         let room = rooms.get(0).unwrap();
         socket
             .to(room.to_string())
             .broadcast()
-            .emit("hello", json!({ "hello": "world" }))
+            .emit(
+                "field-updated",
+                None::<Value>
+            )
             .ok();
-    });
-}
 
-#[derive(Clone)]
-struct MyState {
-    pub pool: PgPool,
+    });
 }
 
 #[shuttle_runtime::main]
@@ -149,9 +269,10 @@ async fn main(#[shuttle_shared_db::Postgres] pool: PgPool) -> shuttle_axum::Shut
         .await
         .expect("Failed to run migrations");
     let state = MyState { pool };
+    let state = Arc::new(RwLock::new(state));
 
     let results = sqlx::query_as!(Field, "SELECT * FROM fields")
-        .fetch_all(&state.pool)
+        .fetch_all(&state.write().await.pool)
         .await
         .expect("Failed to fetch rooms");
     println!("{:?}", results);
@@ -169,12 +290,29 @@ async fn main(#[shuttle_shared_db::Postgres] pool: PgPool) -> shuttle_axum::Shut
     );
 
     let (layer, io) = SocketIo::new_layer();
-    io.ns("/", on_connect);
+    let state_clone = state.clone();
+    io.ns("/", move |socket, data| {
+        on_connect(socket, data, state_clone.clone())
+    });
 
     let router = Router::new()
         .route("/", get(hello_world))
         .route("/room", post(add_room_handler))
-        .route("/rooms", get(get_rooms_handler))
+        .route("/room", get(get_rooms_handler))
+        .route("/fields", get(get_all_fields_handler))
+        .route("/room/:room_id/players", get(get_players_for_room_handler))
+        .route("/room/:room_id/fields", get(get_fields_for_room_id_handler))
+        .route("/room/:room_id", get(get_room_by_room_id_handler))
+        .route(
+            "/is-player-in-room/:room_id/:player_id",
+            get(is_player_in_room_handler),
+        )
+        .route(
+            "/player/:username/room/:room_id",
+            post(create_player_for_the_room_id_handler),
+        )
+        .route("/player/:player_id", get(get_player_by_id_handler))
+        .route("/field/:field_id/player/:player_id", post(check_field_handler))
         .layer(
             ServiceBuilder::new()
                 .layer(CorsLayer::permissive())
